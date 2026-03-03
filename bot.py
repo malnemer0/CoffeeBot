@@ -1,9 +1,9 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, filters, ContextTypes
 import requests
 
-TOKEN = TOKEN = "7883952838:AAF5l5oMmySTeJa4c2wFhRx1nm2eFiF0LLg"
+TOKEN = "7883952838:AAF5l5oMmySTeJa4c2wFhRx1nm2eFiF0LLg"
 ADMIN_ID = 1234633064
 
 logging.basicConfig(
@@ -14,6 +14,7 @@ logging.basicConfig(
 user_data = {}
 saved_cafes = {}
 cafe_requests = {}
+group_members = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -30,6 +31,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ابدأ باختيار 👇",
         reply_markup=reply_markup
     )
+
+async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.new_chat_members:
+        for member in update.message.new_chat_members:
+            if not member.is_bot:
+                user_id = member.id
+                name = member.first_name
+                username = member.username or "بدون يوزر"
+
+                group_members[user_id] = {
+                    "name": name,
+                    "username": username
+                }
+
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        f"👤 عضو جديد انضم للقروب!\n\n"
+                        f"الاسم: {name}\n"
+                        f"اليوزر: @{username}\n"
+                        f"ID: {user_id}\n"
+                        f"إجمالي الأعضاء: {len(group_members)}"
+                    )
+                )
+
+                keyboard = [
+                    [InlineKeyboardButton("☕ أبي كوفي", callback_data="find_coffee")],
+                    [InlineKeyboardButton("🔥 ترند الأسبوع", callback_data="trending")],
+                    [InlineKeyboardButton("❤️ كوفيهاتي المحفوظة", callback_data="saved")],
+                    [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    f"يا هلا {name}! ☕✨\n"
+                    f"أهلاً بك في كوفيهات الرياض 🏙️\n\n"
+                    f"أنا دليلك لأحلى كوفيهات الرياض!\n\n"
+                    f"ابدأ باختيار 👇",
+                    reply_markup=reply_markup
+                )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -258,9 +298,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "راح نراجعه ونضيفه قريباً إن شاء الله ☕",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-
     else:
-        await start(update, context)
+        if update.message.chat.type == "private":
+            await start(update, context)
 
 async def start_from_callback(query):
     keyboard = [
@@ -279,6 +319,7 @@ async def start_from_callback(query):
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("✅ البوت شغال!")
