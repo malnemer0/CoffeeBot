@@ -1,8 +1,11 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, filters, ContextTypes
-import requests
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import requests
+
 TOKEN = os.environ.get("TOKEN", "7883952838:AAF5l5oMmySTeJa4c2wFhRx1nm2eFiF0LLg")
 ADMIN_ID = 1234633064
 
@@ -15,6 +18,19 @@ user_data = {}
 saved_cafes = {}
 cafe_requests = {}
 group_members = {}
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -58,7 +74,7 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
                 keyboard = [
                     [InlineKeyboardButton("☕ أبي كوفي", callback_data="find_coffee")],
-                    [InlineKeyboardButton("🔥 ترند الأسبوع", callback_data="trending")],
+                    [InlineKeyboardButton("�ى ترند الأسبوع", callback_data="trending")],
                     [InlineKeyboardButton("❤️ كوفيهاتي المحفوظة", callback_data="saved")],
                     [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")]
                 ]
@@ -317,6 +333,7 @@ async def start_from_callback(query):
     )
 
 def main():
+    threading.Thread(target=run_health_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
