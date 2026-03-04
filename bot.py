@@ -1,10 +1,11 @@
 import logging
 import os
 import threading
+import sqlite3
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-import requests
 
 TOKEN = os.environ.get("TOKEN", "7883952838:AAF5l5oMmySTeJa4c2wFhRx1nm2eFiF0LLg")
 ADMIN_ID = 1234633064
@@ -14,10 +15,102 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# قاعدة البيانات
+def init_db():
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        name TEXT,
+        username TEXT,
+        phone TEXT,
+        joined_date TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS saved_cafes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        cafe_name TEXT,
+        saved_date TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cafe_name TEXT,
+        area TEXT,
+        mood TEXT,
+        request_date TEXT
+    )''')
+    conn.commit()
+    conn.close()
+
+def save_user(user_id, name, username):
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('''INSERT OR IGNORE INTO users (user_id, name, username, joined_date) 
+                 VALUES (?, ?, ?, ?)''',
+              (user_id, name, username or "بدون يوزر", datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+def save_phone(user_id, phone):
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET phone = ? WHERE user_id = ?', (phone, user_id))
+    conn.commit()
+    conn.close()
+
+def save_cafe(user_id, cafe_name):
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO saved_cafes (user_id, cafe_name, saved_date) 
+                 VALUES (?, ?, ?)''',
+              (user_id, cafe_name, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+def get_saved_cafes(user_id):
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('SELECT cafe_name FROM saved_cafes WHERE user_id = ?', (user_id,))
+    cafes = [row[0] for row in c.fetchall()]
+    conn.close()
+    return cafes
+
+def save_stat(cafe_name, area, mood):
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('''INSERT INTO stats (cafe_name, area, mood, request_date) 
+                 VALUES (?, ?, ?, ?)''',
+              (cafe_name, area, mood, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+def get_trending():
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('''SELECT cafe_name, COUNT(*) as count FROM stats 
+                 GROUP BY cafe_name ORDER BY count DESC LIMIT 3''')
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_top_areas():
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('''SELECT area, COUNT(*) as count FROM stats 
+                 GROUP BY area ORDER BY count DESC LIMIT 5''')
+    results = c.fetchall()
+    conn.close()
+    return results
+
+def get_all_users():
+    conn = sqlite3.connect('coffeebot.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id, name, username, phone, joined_date FROM users')
+    results = c.fetchall()
+    conn.close()
+    return results
+
 user_data = {}
-saved_cafes = {}
-cafe_requests = {}
-group_members = {}
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -33,11 +126,15 @@ def run_health_server():
     server.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+    save_user(user.id, user.first_name, user.username)
+
     keyboard = [
         [InlineKeyboardButton("☕ أبي كوفي", callback_data="find_coffee")],
         [InlineKeyboardButton("🔥 ترند الأسبوع", callback_data="trending")],
         [InlineKeyboardButton("❤️ كوفيهاتي المحفوظة", callback_data="saved")],
-        [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")]
+        [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")],
+        [InlineKeyboardButton("🎁 شارك رقمك واحصل على خصومات", callback_data="share_phone")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -56,10 +153,7 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 name = member.first_name
                 username = member.username or "بدون يوزر"
 
-                group_members[user_id] = {
-                    "name": name,
-                    "username": username
-                }
+                save_user(user_id, name, username)
 
                 await context.bot.send_message(
                     chat_id=ADMIN_ID,
@@ -68,21 +162,21 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         f"الاسم: {name}\n"
                         f"اليوزر: @{username}\n"
                         f"ID: {user_id}\n"
-                        f"إجمالي الأعضاء: {len(group_members)}"
+                        f"إجمالي الأعضاء: {len(get_all_users())}"
                     )
                 )
 
                 keyboard = [
                     [InlineKeyboardButton("☕ أبي كوفي", callback_data="find_coffee")],
-                    [InlineKeyboardButton("�ى ترند الأسبوع", callback_data="trending")],
+                    [InlineKeyboardButton("🔥 ترند الأسبوع", callback_data="trending")],
                     [InlineKeyboardButton("❤️ كوفيهاتي المحفوظة", callback_data="saved")],
-                    [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")]
+                    [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")],
+                    [InlineKeyboardButton("🎁 شارك رقمك واحصل على خصومات", callback_data="share_phone")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(
                     f"يا هلا {name}! ☕✨\n"
                     f"أهلاً بك في كوفيهات الرياض 🏙️\n\n"
-                    f"أنا دليلك لأحلى كوفيهات الرياض!\n\n"
                     f"ابدأ باختيار 👇",
                     reply_markup=reply_markup
                 )
@@ -107,6 +201,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
 
+    elif query.data == "share_phone":
+        keyboard = [[KeyboardButton("📱 شارك رقمي", request_contact=True)]]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        await query.message.reply_text(
+            "🎁 شارك رقمك واحصل على خصومات حصرية من كوفيهات الرياض!\n\n"
+            "اضغط الزر أدناه 👇",
+            reply_markup=reply_markup
+        )
+
     elif query.data.startswith("area_"):
         area = query.data.replace("area_", "")
         if area == "custom":
@@ -125,10 +228,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data.startswith("save_"):
         cafe_name = query.data.replace("save_", "")
-        if user_id not in saved_cafes:
-            saved_cafes[user_id] = []
-        if cafe_name not in saved_cafes[user_id]:
-            saved_cafes[user_id].append(cafe_name)
+        saved = get_saved_cafes(user_id)
+        if cafe_name not in saved:
+            save_cafe(user_id, cafe_name)
             await query.answer("✅ تم الحفظ!")
         else:
             await query.answer("موجود في المحفوظات!")
@@ -204,7 +306,7 @@ async def show_cafes(query, area, mood, user_id):
 
     for cafe in cafes[:2]:
         name = cafe['name']
-        cafe_requests[name] = cafe_requests.get(name, 0) + 1
+        save_stat(name, area, mood)
         specialty_text = "\n".join([f"✔️ {s}" for s in cafe['specialty']])
         maps_url = f"https://maps.google.com/?q={cafe['lat']},{cafe['lng']}"
 
@@ -215,7 +317,9 @@ async def show_cafes(query, area, mood, user_id):
              InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        trend_count = cafe_requests.get(name, 0)
+
+        trending = get_trending()
+        trend_count = next((count for cafe_name, count in trending if cafe_name == name), 0)
         trend_text = f"\n\n🔥 طُلب {trend_count} مرة هذا الأسبوع! 📈" if trend_count > 5 else ""
 
         text = (
@@ -235,7 +339,7 @@ async def show_cafes(query, area, mood, user_id):
         await query.message.reply_text(text, reply_markup=reply_markup)
 
 async def show_saved(query, user_id):
-    saved = saved_cafes.get(user_id, [])
+    saved = get_saved_cafes(user_id)
     if not saved:
         keyboard = [[InlineKeyboardButton("☕ ابحث عن كوفي", callback_data="find_coffee")]]
         await query.edit_message_text(
@@ -254,26 +358,59 @@ async def show_saved(query, user_id):
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_trending(query):
-    if not cafe_requests:
+    trending = get_trending()
+    top_areas = get_top_areas()
+
+    if not trending:
         await query.edit_message_text(
             "🔥 ما في ترند بعد!\nابدأ البحث عن كوفيهات عشان يتكون الترند 😊",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("☕ ابحث", callback_data="find_coffee")]])
         )
         return
 
-    sorted_cafes = sorted(cafe_requests.items(), key=lambda x: x[1], reverse=True)[:3]
     medals = ["🥇", "🥈", "🥉"]
     text = "🔥━━━━━━━━━━━━━━━━━━🔥\n\n"
     text += "    ترند الأسبوع ☕\n\n"
     text += "🔥━━━━━━━━━━━━━━━━━━🔥\n\n"
-    for i, (cafe, count) in enumerate(sorted_cafes):
+    for i, (cafe, count) in enumerate(trending):
         text += f"{medals[i]} {cafe}\n   {count} طلب هذا الأسبوع\n\n"
+
+    if top_areas:
+        text += "━━━━━━━━━━━━━━━━━━\n\n"
+        text += "📍 الأحياء الأكثر بحثاً:\n\n"
+        area_medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        for i, (area, count) in enumerate(top_areas):
+            text += f"{area_medals[i]} {area}: {count} بحث\n"
 
     keyboard = [
         [InlineKeyboardButton("☕ ابحث في حيك", callback_data="find_coffee")],
         [InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")]
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    phone = update.message.contact.phone_number
+    name = update.message.from_user.first_name
+
+    save_phone(user_id, phone)
+
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            f"📱 رقم جديد!\n\n"
+            f"الاسم: {name}\n"
+            f"الرقم: {phone}\n"
+            f"ID: {user_id}"
+        )
+    )
+
+    keyboard = [[InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")]]
+    await update.message.reply_text(
+        "✅ شكراً! تم تسجيل رقمك\n"
+        "راح توصلك خصومات حصرية قريباً! 🎁",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -315,15 +452,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
-        if update.message.chat.type == "private":
-            await start(update, context)
+        await start(update, context)
 
 async def start_from_callback(query):
     keyboard = [
         [InlineKeyboardButton("☕ أبي كوفي", callback_data="find_coffee")],
         [InlineKeyboardButton("🔥 ترند الأسبوع", callback_data="trending")],
         [InlineKeyboardButton("❤️ كوفيهاتي المحفوظة", callback_data="saved")],
-        [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")]
+        [InlineKeyboardButton("💡 اقترح كوفي", callback_data="suggest")],
+        [InlineKeyboardButton("🎁 شارك رقمك واحصل على خصومات", callback_data="share_phone")]
     ]
     await query.edit_message_text(
         "يا هلا وسهلا! ☕✨\n"
@@ -332,11 +469,60 @@ async def start_from_callback(query):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    users = get_all_users()
+    trending = get_trending()
+    top_areas = get_top_areas()
+
+    phones = [u for u in users if u[3]]
+
+    text = "📊 إحصائيات البوت\n\n"
+    text += f"👥 إجمالي المستخدمين: {len(users)}\n"
+    text += f"📱 شاركوا رقمهم: {len(phones)}\n\n"
+
+    if trending:
+        text += "🔥 أكثر الكوفيهات طلباً:\n"
+        for cafe, count in trending:
+            text += f"  • {cafe}: {count} طلب\n"
+
+    if top_areas:
+        text += "\n📍 أكثر الأحياء بحثاً:\n"
+        for area, count in top_areas:
+            text += f"  • {area}: {count} بحث\n"
+
+    await update.message.reply_text(text)
+
+async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID:
+        return
+
+    users = get_all_users()
+    if not users:
+        await update.message.reply_text("ما في مستخدمين بعد!")
+        return
+
+    text = f"👥 قائمة المستخدمين ({len(users)}):\n\n"
+    for user in users[:20]:
+        user_id, name, username, phone, joined = user
+        text += f"• {name} | @{username}"
+        if phone:
+            text += f" | 📱{phone}"
+        text += f"\n"
+
+    await update.message.reply_text(text)
+
 def main():
+    init_db()
     threading.Thread(target=run_health_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CommandHandler("users", admin_users))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
+    app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     print("✅ البوت شغال!")
